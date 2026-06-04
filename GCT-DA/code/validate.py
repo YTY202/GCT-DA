@@ -12,10 +12,7 @@ from test import mytest
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
-# =========================
-# 路径设置
-# =========================
-TRAIN_ADJ_PATH = '../data/association_matrix.xlsx'   # 训练时使用的关联矩阵，用来提供“训练空间”的实体顺序
+TRAIN_ADJ_PATH = '../data/association_matrix.xlsx'   
 EXTERNAL_ADJ_PATH = '../validate_data/dis_meta_association_matrix.xlsx'
 EXTERNAL_DIS_SIM_PATH = '../validate_data/disease_com_similarity.xlsx'
 EXTERNAL_MET_SIM_PATH = '../validate_data/metabolite_com_similarity.xlsx'
@@ -37,37 +34,24 @@ def set_seed(seed):
 
 
 def read_named_matrix(path):
-    """
-    读取带行名/列名的 Excel 矩阵
-    """
+ 
+
     df = pd.read_excel(path, header=0, index_col=0)
-
-    # 清理空行空列
     df = df.dropna(axis=0, how='all').dropna(axis=1, how='all')
-
-    # 统一名称格式
+    
     df.index = df.index.map(lambda x: str(x).strip())
     df.columns = df.columns.map(lambda x: str(x).strip())
 
-    # 去掉可能残留的 unnamed
     df = df.loc[[i for i in df.index if not str(i).lower().startswith('unnamed')], :]
     df = df.loc[:, [c for c in df.columns if not str(c).lower().startswith('unnamed')]]
 
-    # 全转数值，转不了变 NaN，再补 0
     df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
 
     return df
 
 
 def inspect_checkpoint_input_dims(model_path, device):
-    """
-    从保存的 checkpoint 里读取模型要求的输入维度
-    返回:
-        expected_num_mets, expected_num_dis
-    含义:
-        疾病分支输入维度 = 训练代谢物数
-        代谢物分支输入维度 = 训练疾病数
-    """
+  
     checkpoint = torch.load(model_path, map_location=device)
 
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
@@ -82,13 +66,7 @@ def inspect_checkpoint_input_dims(model_path, device):
 
 
 def project_external_to_train_space(train_adj_df, ext_adj_df, ext_dis_df, ext_met_df):
-    """
-    把外部数据映射到训练空间:
-    - 输出 full_adj / full_dis / full_met 的 shape 与训练时一致
-    - 只在重叠实体区域填入外部数据
-    - 其余位置补 0，节点自身对角线补 1
-    - 同时返回 valid_mask，后面只在“真实外部覆盖区域”采负样本
-    """
+    
     train_mets = [str(x).strip() for x in train_adj_df.index]
     train_dis = [str(x).strip() for x in train_adj_df.columns]
 
@@ -96,7 +74,6 @@ def project_external_to_train_space(train_adj_df, ext_adj_df, ext_dis_df, ext_me
     ext_dis_df = ext_dis_df.copy()
     ext_met_df = ext_met_df.copy()
 
-    # 找到同时能在外部文件中对齐的实体
     common_mets = [
         m for m in train_mets
         if m in ext_adj_df.index and m in ext_met_df.index and m in ext_met_df.columns
@@ -114,7 +91,6 @@ def project_external_to_train_space(train_adj_df, ext_adj_df, ext_dis_df, ext_me
     n_met = len(train_mets)
     n_dis = len(train_dis)
 
-    # 1) 关联矩阵：扩展到训练空间
     full_adj = pd.DataFrame(
         np.zeros((n_met, n_dis), dtype=np.float32),
         index=train_mets,
@@ -122,7 +98,6 @@ def project_external_to_train_space(train_adj_df, ext_adj_df, ext_dis_df, ext_me
     )
     full_adj.loc[common_mets, common_dis] = ext_adj_df.loc[common_mets, common_dis].values
 
-    # 2) 疾病相似矩阵：扩展到训练空间
     full_dis = pd.DataFrame(
         np.zeros((n_dis, n_dis), dtype=np.float32),
         index=train_dis,
@@ -131,7 +106,6 @@ def project_external_to_train_space(train_adj_df, ext_adj_df, ext_dis_df, ext_me
     np.fill_diagonal(full_dis.values, 1.0)
     full_dis.loc[common_dis, common_dis] = ext_dis_df.loc[common_dis, common_dis].values
 
-    # 3) 代谢物相似矩阵：扩展到训练空间
     full_met = pd.DataFrame(
         np.zeros((n_met, n_met), dtype=np.float32),
         index=train_mets,
@@ -140,7 +114,6 @@ def project_external_to_train_space(train_adj_df, ext_adj_df, ext_dis_df, ext_me
     np.fill_diagonal(full_met.values, 1.0)
     full_met.loc[common_mets, common_mets] = ext_met_df.loc[common_mets, common_mets].values
 
-    # 4) 有效评估区域 mask：只在 overlap 子空间评估
     valid_mask = pd.DataFrame(
         np.zeros((n_met, n_dis), dtype=bool),
         index=train_mets,
