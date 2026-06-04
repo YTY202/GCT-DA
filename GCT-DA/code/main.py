@@ -9,6 +9,10 @@ from train import *
 from test import *
 import torch
 import os
+import copy
+import torch.nn.functional as F
+from sklearn.decomposition import PCA
+
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
 Adj = pd.read_excel('../data/association_matrix.xlsx', header=0)
@@ -21,6 +25,12 @@ Meta_simi = pd.read_excel('../data/metabolite_network.xlsx', header=0)
 print(f'代谢物相似性矩阵：\n{Meta_simi}')
 
 args = parameter_parser()
+
+save_dir = './saved_models'
+os.makedirs(save_dir, exist_ok=True)
+
+global_best_auc = -1
+global_best_path = None
 
 index_matrix = np.mat(np.where(Adj == 1))  # 输出邻接矩阵中为“1”的关联关系，维度：2 X 4763
 association_nam = index_matrix.shape[1]  # 关联关系数：4763
@@ -59,7 +69,8 @@ for k in range(k_folds):
     train_pos_edge_index = torch.tensor(train_pos_edge_index, dtype=torch.long)  # tensor格式，训练集正样本
 
     # --------------------------------------------疾病Data数据构建--------------------------------------------------
-    dis_x_list = (train_matrix.T).tolist()
+    #dis_x_list = PCA(n_components=128).fit_transform(np.asarray(train_matrix.T))
+    dis_x_list = train_matrix.T
     dis_edge_index_list = np.mat(np.where(dis_matrix > 0)).tolist()  # 疾病边索引的List格式
     dis_matrix_list = dis_matrix.tolist()  # 疾病网络的list格式，用来寻找边权值
     dis_edge_attr_list = []  # 代谢物边权值List空表，用来存放边权值
@@ -72,7 +83,7 @@ for k in range(k_folds):
     print(f'dis_data: {dis_data}')
 
     # -------------------------------------------代谢物Data数据构建--------------------------------------------------
-    met_x_list = train_matrix.tolist()
+    met_x_list = train_matrix
     met_edge_index_list = np.mat(np.where(met_matrix > 0)).tolist()  # 代谢物边索引的List格式
     met_matrix_list = met_matrix.tolist()  # 代谢物网络的list格式，用来寻找边权值
     met_edge_attr_list = []  # 代谢物边权值List空表，用来存放边权值
@@ -94,6 +105,8 @@ for k in range(k_folds):
     criterion = F.binary_cross_entropy_with_logits
 
     best_auc = best_prc = best_acc = 0
+    best_model_state = None
+    best_epoch = -1
 
     for epoch in range(0, args.epochs):
         start = time.time()
@@ -105,11 +118,47 @@ for k in range(k_folds):
             best_auc = auc
             best_prc = prc
             best_acc = acc
+            best_epoch = epoch + 1
+
             tpr = tpr.tolist()
             fpr = fpr.tolist()
             precision = precision.tolist()
             recall = recall.tolist()
-            best_metric[k] = {'AUC': auc, 'ACC': acc, 'PRC': prc, 'PRE': pre, 'REC': rec, 'F1': f1, 'tpr': tpr, 'fpr': fpr, 'recall': recall, 'precision': precision}
+
+            best_metric[k] = {
+                'AUC': auc,
+                'ACC': acc,
+                'PRC': prc,
+                'PRE': pre,
+                'REC': rec,
+                'F1': f1,
+                'tpr': tpr,
+                'fpr': fpr,
+                'recall': recall,
+                'precision': precision
+            }
+
+            # 保存当前fold最优模型参数
+            best_model_state = copy.deepcopy(model.state_dict())
+
+            save_path = os.path.join(save_dir, f'best_model_fold_{k + 1}.pth')
+            torch.save({
+                'fold': k + 1,
+                'epoch': best_epoch,
+                'model_state_dict': best_model_state,
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_auc': best_auc,
+                'best_prc': best_prc,
+                'best_acc': best_acc,
+                'args': vars(args) if hasattr(args, '__dict__') else args
+            }, save_path)
+
+            print(f'>>> fold {k + 1} best model saved to: {save_path}')
+
+            # 顺便记录全局最优
+            if best_auc > global_best_auc:
+                global_best_auc = best_auc
+                global_best_path = save_path
         end = time.time()
         print(f'Epoch:{epoch+1}  loss:{train_loss:.4f}  AUC:{auc:.4f}  ACC:{acc:.4f}  PRC:{prc:.4f}  PRE:{pre:.4f}  REC:{rec:.4f}  F1:{f1:.4f}  time: {(end - start):.2f}')
     # print(best_metric[k])
@@ -130,4 +179,5 @@ print('*************************************************************************
 print('*******************************************************************************************************************')
 average_5 = {'AUC': AUC/5, 'ACC': ACC/5, 'PRC': PRC/5, 'PRE': PRE/5, 'REC': REC/5, 'F1': F1/5}
 print(f'{k_folds}_average_metric: {average_5}')
+print(f'全局最优模型路径: {global_best_path}')
 print('-------------------------------------- End of Code --------------------------------------')
